@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import docker
+import json
 import multiprocessing
 import Queue
 import pyrax
@@ -52,7 +53,7 @@ class RaxQueue(threading.Thread):
                         print "Rax Cloud Queue is empty...."
                         time.sleep(self.tt_wait)
                 else:
-                    print "Local queue is full waiting for messages to process..."
+                    # print "Local queue is full waiting for messages to process..."
                     time.sleep(self.tt_wait)
             except pyrax.exceptions.ClientException, e:
                 print "Couldn't claim or delete message: %s" % e
@@ -71,9 +72,11 @@ def get_worker_count():
     return multiprocessing.cpu_count()
 
 def process_video( item, docker_image_name ):
-    input_container = item.input_container
-    output_container = item.output_container
-    media_file = item.media_file
+    # items will always have just one message
+    item_dict = json.loads(item.messages[0].body)
+    input_container = item_dict['input-container']
+    output_container = item_dict['output-container']
+    media_file = item_dict['videofile']
 
 def worker( queue_object ):
     while True:
