@@ -1,29 +1,78 @@
 #!/usr/bin/env python
 
-import docker
 import json
 import multiprocessing
 import Queue
 import pyrax
+import shlex
 import threading
 import time
 import uuid
 
+import urllib3
+urllib3.disable_warnings()
+
+from subprocess import Popen, PIPE
+from docker import Client
+
+# Docker formatted command line
+# This is a hardcoded value for running cf_processor
+# we'll be making this more generic
+video_docker_cmd = '''docker run --rm --env-file .go-rax-creds
+                    jyidiego/gorax_trans
+                    /go/src/github.com/jyidiego/gorax_transcoder/cf_processor
+                    -raw_video %s
+                    -output_container %s
+                    -input_container %s'''
+
+# Not really used yet, leaving it around for the future
+class DockWorker(object):
+    def __init__(   self,
+                    docker_image_name,
+                    command,
+                    environment,
+                    base_url="unix://var/run/docker.sock",
+                    version="1.15" ):
+        self.dockerh = Client( base_url=base_url, version=version ) 
+        self.command = None
+        self.docker_img = None
+
+    def run_image(  docker_image_name,
+                    command,
+                    environment ):
+        self.command = command
+        self.docker_img = docker_image_name
+
+
+class RaxAuth(object):
+    def __init__(   self,
+                    credential_file=".rax_creds",
+                    region="IAD",
+                    auth_url="https://identity.api.rackspacecloud.com/v2.0/" ):
+        pyrax.set_setting('identity_type', 'rackspace')
+        pyrax.set_credential_file(credential_file)
+        self.pyrax = pyrax
+        self.region = region
+        self.rax_user = pyrax.identity.username
+        self.rax_apikey = pyrax.identity.api_key
+        self.rax_auth_url=auth_url
+
+    def gorax_env_dict(self):
+        return {    "RS_USERNAME" : self.rax_user,
+                    "RS_API_KEY" : self.rax_apikey,
+                    "RS_AUTH_URL" : self.rax_auth_url  }
 
 class RaxQueue(threading.Thread):
 
     def __init__(   self,
-                    credential_file=".rax_creds",
+                    rax_auth,
                     rax_msg_ttl=300,
                     rax_queue='transcode_demo',
-                    region="IAD",
                     time_to_wait=5,
                     debug=False ):
 
-        pyrax.set_setting('identity_type', 'rackspace')
-        pyrax.set_credential_file(credential_file)
         super(RaxQueue, self).__init__()
-        self.cq = pyrax.connect_to_queues(region=region)  # Demo to run out of IAD
+        self.cq = rax_auth.pyrax.connect_to_queues(region=rax_auth.region)  # Demo to run out of IAD
         self.cq.client_id = str(uuid.uuid4())  # Randomly create a uuid client id
 
         if not self.cq.queue_exists(rax_queue):
@@ -35,7 +84,6 @@ class RaxQueue(threading.Thread):
                     break
             # self.rax_queue = self.cq.list()
             # self.rax_queue = [ (i.name, i) for i in self.cq.list() if i.name == rax_queue ]
-        self.region = region
         self.local_queue = Queue.Queue(maxsize=multiprocessing.cpu_count())
         self.rax_msg_ttl = rax_msg_ttl
         self.tt_wait = time_to_wait
@@ -71,12 +119,36 @@ def get_worker_count():
     # Convenient way to set worker count dynamically!
     return multiprocessing.cpu_count()
 
-def process_video( item, docker_image_name ):
+def process_video( item, rax_auth, logs_container ):
     # items will always have just one message
     item_dict = json.loads(item.messages[0].body)
-    input_container = item_dict['input-container']
-    output_container = item_dict['output-container']
-    media_file = item_dict['videofile']
+
+    video_cmd = video_docker_cmd % ( item_dict['videofile'],
+                                     item_dict['output-container'],
+                                     item_dict['input-container'] )
+    pargs = shlex.split( video_cmd )
+    p = Popen( pargs, stdout=PIPE, stderr=PIPE )
+    p.wait()
+    stdoutdata, stderrdata = p.communicate()
+    cf = rax_auth.pyrax.connect_to_cloudfiles(region=rax_auth.region)
+    container = cf.get_container( logs_container )
+
+    kwargs={ "obj_name" : item_dict['videofile'] + ".stdout.log",
+             "data" : stdoutdata }
+    t_stdout = threading.Thread(target=container.create, kwargs=kwargs)
+    t_stdout.start()
+    
+    kwargs={ "obj_name" : item_dict['videofile'] + ".stderr.log",
+             "data" : stderrdata }
+    t_stderr = threading.Thread(target=container.create, kwargs=kwargs)
+    t_stderr.start()
+
+    # wait for the threads to finish uploading logs
+    t_stdout.join()
+    t_stderr.join()
+
+    # container.create {obj_name=item_dict['videofile'] + ".stdout.log",
+    #                 data=stdoutdata} 
 
 def worker( queue_object ):
     while True:
@@ -88,7 +160,7 @@ def worker( queue_object ):
 def update_job_status():
     print "Job %s is Done!"
 
-def init_worker_pool():
+def init_worker_pool(): 
     for i in range( get_worker_count() ):
         t = Thread(target=worker)
         t.daemon = True
