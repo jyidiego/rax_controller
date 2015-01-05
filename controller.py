@@ -192,9 +192,9 @@ def main():
     while True:
         for w in worker_pool:
             if w.is_alive() and w.daemon:
-                print "ALIVE + name: %s id: %s\n" % (w.name, w.ident) 
+                print "ALIVE + name: %s id: %s" % (w.name, w.ident) 
             elif w.daemon:
-                print "DEAD - name: %s id: %s\n" % (w.name, w.ident) 
+                print "DEAD - name: %s id: %s" % (w.name, w.ident) 
         time.sleep(time_btw_check)
 
 if __name__ == '__main__':
