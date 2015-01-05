@@ -18,7 +18,7 @@ from docker import Client
 # Docker formatted command line
 # This is a hardcoded value for running cf_processor
 # we'll be making this more generic
-video_docker_cmd = '''docker run --rm --env-file .go-rax-creds
+video_docker_cmd = '''docker run --rm --env-file /usr/src/.go-rax-creds
                     jyidiego/gorax_trans
                     /go/src/github.com/jyidiego/gorax_transcoder/cf_processor
                     -raw_video %s
@@ -46,7 +46,7 @@ class DockWorker(object):
 
 class RaxAuth(object):
     def __init__(   self,
-                    credential_file=".rax_creds",
+                    credential_file="/usr/src/.rax_creds",
                     region="IAD",
                     auth_url="https://identity.api.rackspacecloud.com/v2.0/" ):
         pyrax.set_setting('identity_type', 'rackspace')
