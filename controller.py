@@ -137,7 +137,7 @@ def process_video( item, rax_auth, logs_container ):
              "data" : stdoutdata }
     t_stdout = threading.Thread(target=container.create, kwargs=kwargs)
     t_stdout.start()
-    
+
     kwargs={ "obj_name" : item_dict['videofile'] + ".stderr.log",
              "data" : stderrdata }
     t_stderr = threading.Thread(target=container.create, kwargs=kwargs)
@@ -147,28 +147,22 @@ def process_video( item, rax_auth, logs_container ):
     t_stdout.join()
     t_stderr.join()
 
-    # container.create {obj_name=item_dict['videofile'] + ".stdout.log",
-    #                 data=stdoutdata} 
-
-def worker( queue_object ):
+def worker( rax_queue, rax_auth, container_logs ):
     while True:
-        item = queue_object.get_task()
-        process_video(item)
-        queue_object.task_done(item)
+        item = rax_queue.get_task()
+        process_video(item, rax_auth, container_logs)
+        rax_queue.task_done(item)
         update_job_status(item)
 
-def update_job_status():
-    print "Job %s is Done!"
+def update_job_status( rax_queue_message):
+    print "Job %s is Done!" % rax_queue_message
 
-def init_worker_pool(): 
+def init_worker_pool( rax_queue, rax_auth, container_logs ): 
+    args=( rax_queue, rax_auth, container_logs )
     for i in range( get_worker_count() ):
-        t = Thread(target=worker)
+        t = threading.Thread(target=worker, args=args)
         t.daemon = True
         t.start()
-
-def get_tasks():
-    # This fuction pulls tasks of Rackspace Cloud Queues
-    pass
 
 def main():
     pass
