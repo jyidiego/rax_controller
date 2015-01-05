@@ -67,8 +67,9 @@ class RaxQueue(threading.Thread):
     def __init__(   self,
                     rax_auth,
                     rax_msg_ttl=300,
+                    rax_msg_grace=60,
                     rax_queue='transcode_demo',
-                    time_to_wait=5,
+                    time_to_wait=2,
                     debug=False ):
 
         super(RaxQueue, self).__init__()
@@ -86,9 +87,15 @@ class RaxQueue(threading.Thread):
             # self.rax_queue = [ (i.name, i) for i in self.cq.list() if i.name == rax_queue ]
         self.local_queue = Queue.Queue(maxsize=multiprocessing.cpu_count())
         self.rax_msg_ttl = rax_msg_ttl
+        self.rax_msg_grace = rax_msg_grace
         self.tt_wait = time_to_wait
 
     def run(self):
+        ''' No Longer used. Decided this isn't a good idea
+            Instead better to have the workers just grab tasks directly off the Rax
+            Cloud Queue and have the controller manage initializing the workers
+            rather than keeping a thread that puts messages on a local queue.
+            Keeping the code around for reference. '''
         while True:
             try:
                 # 1 message per iteration
@@ -109,10 +116,20 @@ class RaxQueue(threading.Thread):
     def task_done(self, rax_message):
         for i in rax_message.messages:
             i.delete(claim_id=i.claim_id)
-        self.local_queue.task_done()
+        # No longer used just kept for future reference
+        # self.local_queue.task_done()
 
     def get_task(self):
-        return self.local_queue.get()
+	while [ True ]:
+            m = self.cq.claim_messages( self.rax_queue,
+                                        self.rax_msg_ttl,
+                                        self.rax_msg_grace,
+                                        1 )
+            if m:
+                return m
+            else:
+                print "%s: Rax Cloud Queue is empty...waiting %s seconds." % (threading.current_thread().name, self.tt_wait)
+                time.sleep(self.tt_wait)
 
 
 def get_worker_count():
