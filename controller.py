@@ -66,7 +66,7 @@ class RaxQueue(threading.Thread):
 
     def __init__(   self,
                     rax_auth,
-                    rax_msg_ttl=300,
+                    rax_msg_ttl=1200,
                     rax_msg_grace=60,
                     rax_queue='transcode_demo',
                     time_to_wait=2,
@@ -120,7 +120,7 @@ class RaxQueue(threading.Thread):
         # self.local_queue.task_done()
 
     def get_task(self):
-	while [ True ]:
+	while True:
             m = self.cq.claim_messages( self.rax_queue,
                                         self.rax_msg_ttl,
                                         self.rax_msg_grace,
@@ -175,14 +175,27 @@ def update_job_status( rax_queue_message):
     print "Job %s is Done!" % rax_queue_message
 
 def init_worker_pool( rax_queue, rax_auth, container_logs ): 
+    worker_pool = [ ]
     args=( rax_queue, rax_auth, container_logs )
     for i in range( get_worker_count() ):
         t = threading.Thread(target=worker, args=args)
         t.daemon = True
         t.start()
+        worker_pool.append(t)
+    return worker_pool
 
 def main():
-    pass
+    time_btw_check = 3
+    auth = RaxAuth()
+    rax_queue = RaxQueue( auth )
+    worker_pool = init_worker_pool( rax_queue, auth, 'video_jobs') 
+    while True:
+        for w in worker_pool:
+            if w.is_alive() and w.daemon:
+                print "ALIVE + name: %s id: %s\n" % (w.name, w.ident) 
+            elif w.daemon:
+                print "DEAD - name: %s id: %s\n" % (w.name, w.ident) 
+        time.sleep(time_btw_check)
 
 if __name__ == '__main__':
-    pass
+    main()
