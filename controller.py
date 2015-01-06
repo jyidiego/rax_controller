@@ -15,6 +15,9 @@ urllib3.disable_warnings()
 from subprocess import Popen, PIPE
 from docker import Client
 
+from requests.adapters import ConnectionError
+from requests.adapters import SSLError
+
 # Docker formatted command line
 # This is a hardcoded value for running cf_processor
 # we'll be making this more generic
@@ -121,10 +124,21 @@ class RaxQueue(threading.Thread):
 
     def get_task(self):
 	while True:
-            m = self.cq.claim_messages( self.rax_queue,
-                                        self.rax_msg_ttl,
-                                        self.rax_msg_grace,
-                                        1 )
+            try:
+                m = self.cq.claim_messages( self.rax_queue,
+                                            self.rax_msg_ttl,
+                                            self.rax_msg_grace,
+                                            1 )
+            except SSLError,e:
+                print "SSLError: %s" % e
+                continue
+            except ConnectionError, e:
+                print "ConnectionError: %s" % e
+                continue
+            except:
+                e = sys.exec_info()[0]
+                print "Unknown Error: %s" % e
+                continue
             if m:
                 return m
             else:
@@ -184,10 +198,10 @@ def init_worker_pool( rax_queue, rax_auth, container_logs ):
         worker_pool.append(t)
     return worker_pool
 
-def main():
-    time_btw_check = 3
+def main(poll=3, time_to_wait=2):
+    poll = 3
     auth = RaxAuth()
-    rax_queue = RaxQueue( auth )
+    rax_queue = RaxQueue( rax_auth=auth, time_to_wait=time_to_wait)
     worker_pool = init_worker_pool( rax_queue, auth, 'video_jobs') 
     while True:
         for w in worker_pool:
@@ -195,7 +209,7 @@ def main():
                 print "ALIVE + name: %s id: %s" % (w.name, w.ident) 
             elif w.daemon:
                 print "DEAD - name: %s id: %s" % (w.name, w.ident) 
-        time.sleep(time_btw_check)
+        time.sleep(poll)
 
 if __name__ == '__main__':
     main()
