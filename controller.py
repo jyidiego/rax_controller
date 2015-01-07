@@ -28,23 +28,14 @@ video_docker_cmd = '''docker run --rm --env-file /usr/src/.go-rax-creds
                     -output_container %s
                     -input_container %s'''
 
-# Not really used yet, leaving it around for the future
 class DockWorker(object):
     def __init__(   self,
-                    docker_image_name,
-                    command,
-                    environment,
                     base_url="unix://var/run/docker.sock",
                     version="1.15" ):
         self.dockerh = Client( base_url=base_url, version=version ) 
-        self.command = None
-        self.docker_img = None
 
-    def run_image(  docker_image_name,
-                    command,
-                    environment ):
-        self.command = command
-        self.docker_img = docker_image_name
+    def is_container_running(self, container_id):
+        return self.dockerh.inspect_container(container_id)['State']['Running']
 
 
 class RaxAuth(object):
@@ -122,13 +113,23 @@ class RaxQueue(threading.Thread):
         # No longer used just kept for future reference
         # self.local_queue.task_done()
 
+    def release_task(self, rax_message):
+        self.rax_queue.release_claim( rax_message )
+
+    def refresh_claim_ttl(self, rax_message, ttl):
+        rax_message.reload()
+        if ( rax_message.ttl - rax_message.age ) < ( self.tt_wait + 5 ):
+            self.rax_queue.update_claim( rax_message, ttl=ttl, grace=ttl )
+            return True
+        else:
+            return False
+
     def get_task(self):
 	while True:
             try:
-                m = self.cq.claim_messages( self.rax_queue,
-                                            self.rax_msg_ttl,
-                                            self.rax_msg_grace,
-                                            1 )
+                m = self.rax_queue.claim_messages( ttl=self.rax_msg_ttl,
+                                                   grace=self.rax_msg_grace,
+                                                   count=1 )
             except SSLError,e:
                 print "SSLError: %s" % e
                 continue
@@ -150,16 +151,56 @@ def get_worker_count():
     # Convenient way to set worker count dynamically!
     return multiprocessing.cpu_count()
 
-def process_video( item, rax_auth, logs_container ):
+def monitor_container( event, rax_queue, item, popen ):
+    d = DockWorker()
+    msg = item.messages[0]
+    while not event.is_set():
+        if rax_queue.refresh_claim_ttl( item, rax_queue.rax_msg_ttl ):
+            item.reload()
+            msg.reload()
+            item.messages.append(msg)
+            print "refreshing claim: %s" % item 
+
+        msg.reload()
+        if msg.age > msg.ttl:
+            # If we make it here our docker container is probably hung
+            # and we should give up our claim
+            print "Message age exceeded ttl, giving up our claim: %s" % msg
+            rax_queue.release_task( item )
+            print "Killing pid: %s" % popen.pid
+            popen.kill()
+            break
+        time.sleep( rax_queue.tt_wait )
+
+def process_video( item, rax_auth, rax_queue, logs_container ):
     # items will always have just one message
-    item_dict = json.loads(item.messages[0].body)
+    try:
+        item_dict = json.loads(item.messages[0].body)
+    except ValueError,e:
+        print "json module was unable to convert to a python dict."
+        print "ValueError: %s" % e
+        return False
+        
 
     video_cmd = video_docker_cmd % ( item_dict['videofile'],
                                      item_dict['output-container'],
                                      item_dict['input-container'] )
     pargs = shlex.split( video_cmd )
     p = Popen( pargs, stdout=PIPE, stderr=PIPE )
+
+    # Though i needed this but maybe not
+    # c_id = p.stdout.readline().strip()
+    e = threading.Event()
+    m_thread = threading.Thread(target=monitor_container, args=(e, rax_queue, item, p,))
+    m_thread.start()
     p.wait()
+
+
+    # time for the monitoring thread to be terminated
+    e.set()
+
+    # brief wait while the worker thread catches up.
+    m_thread.join()
     stdoutdata, stderrdata = p.communicate()
     cf = rax_auth.pyrax.connect_to_cloudfiles(region=rax_auth.region)
     container = cf.get_container( logs_container )
@@ -178,12 +219,20 @@ def process_video( item, rax_auth, logs_container ):
     t_stdout.join()
     t_stderr.join()
 
+    if p.returncode < 0:
+        return False
+    else:
+        return True
+
 def worker( rax_queue, rax_auth, container_logs ):
     while True:
         item = rax_queue.get_task()
-        process_video(item, rax_auth, container_logs)
-        rax_queue.task_done(item)
-        update_job_status(item)
+        if process_video(item, rax_auth, rax_queue, container_logs):
+            rax_queue.task_done(item)
+            update_job_status(item)
+        else:
+            print "Couldn't Process task:\n%sreleasing claim\n" % item
+            rax_queue.release_task(item) 
 
 def update_job_status( rax_queue_message):
     print "Job %s is Done!" % rax_queue_message
