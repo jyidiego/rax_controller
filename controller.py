@@ -143,33 +143,48 @@ class RaxQueue(threading.Thread):
             if m:
                 return m
             else:
-                print "%s: Rax Cloud Queue is empty...waiting %s seconds." % (threading.current_thread().name, self.tt_wait)
+                # print "%s: Rax Cloud Queue is empty...waiting %s seconds." % (threading.current_thread().name, self.tt_wait)
                 time.sleep(self.tt_wait)
 
 
 def get_worker_count():
     # Convenient way to set worker count dynamically!
-    return multiprocessing.cpu_count()
+    cpu_num = multiprocessing.cpu_count()
+    # we can't use all the CPUs for workers
+    if cpu_num < 2:
+        return 1
+    else:
+        return cpu_num - 2
+
+def message_refresh( item, message_list ):
+    item.reload()
+    for msg in message_list:
+        msg.reload()
+    item.messages = message_list
+    return ( item, message_list )
 
 def monitor_container( event, rax_queue, item, popen ):
     d = DockWorker()
-    msg = item.messages[0]
+    item, msg_list = message_refresh( item, item.messages )
     while not event.is_set():
         if rax_queue.refresh_claim_ttl( item, rax_queue.rax_msg_ttl ):
-            item.reload()
-            msg.reload()
-            item.messages.append(msg)
-            print "refreshing claim: %s" % item 
+            item, msg_list = message_refresh( item, msg_list )
+            print "REFRESHING Claim: %s" % item 
+        else:
+            item, msg_list = message_refresh( item, msg_list )
+            print "NOOP Claim: %s" % item 
 
-        msg.reload()
-        if msg.age > msg.ttl:
-            # If we make it here our docker container is probably hung
-            # and we should give up our claim
-            print "Message age exceeded ttl, giving up our claim: %s" % msg
-            print "Killing pid: %s" % popen.pid
-            popen.kill()
-            break
+        for msg in msg_list:
+            msg.reload()
+            if msg.age > msg.ttl:
+                # If we make it here our docker container is probably hung
+                # and we should give up our claim
+                print "Message age exceeded ttl, giving up our claim: %s" % msg
+                print "Killing pid: %s" % popen.pid
+                popen.kill()
+                return 1
         time.sleep( rax_queue.tt_wait )
+    return 0
 
 def process_video( item, rax_auth, rax_queue, logs_container ):
     # items will always have just one message
@@ -199,24 +214,42 @@ def process_video( item, rax_auth, rax_queue, logs_container ):
     e.set()
 
     # brief wait while the worker thread catches up.
-    m_thread.join()
+    # m_thread.join() probably not necessary
     stdoutdata, stderrdata = p.communicate()
     cf = rax_auth.pyrax.connect_to_cloudfiles(region=rax_auth.region)
     container = cf.get_container( logs_container )
 
-    kwargs={ "obj_name" : item_dict['videofile'] + ".stdout.log",
-             "data" : stdoutdata }
-    t_stdout = threading.Thread(target=container.create, kwargs=kwargs)
-    t_stdout.start()
+    # Simple and straight forward wrap with a try/exception
+    try:
+        stdout_blob = container.store_object( obj_name=item_dict['videofile'] + ".stdout.log",
+                                              data=stdoutdata )
+        print "Stored stdout:", stdout_blob
 
-    kwargs={ "obj_name" : item_dict['videofile'] + ".stderr.log",
-             "data" : stderrdata }
-    t_stderr = threading.Thread(target=container.create, kwargs=kwargs)
-    t_stderr.start()
+        stderr_blob = container.store_object( obj_name=item_dict['videofile'] + ".stderr.log",
+                                              data=stderrdata )
+        print "Stored stderr:", stderr_blob
+    except:
+        e = sys.exec_info()[0]
+        print "Upload of stdout/stderr from workder failed!"
+        print "Unknown Error: ", e
+        print "Continuing on.."
+
+    #####################################################################
+    # De-complicate the upload
+    #kwargs={ "obj_name" : item_dict['videofile'] + ".stdout.log",
+    #         "data" : stdoutdata }
+    #t_stdout = threading.Thread(target=container.create, kwargs=kwargs)
+    #t_stdout.start()
+
+    #kwargs={ "obj_name" : item_dict['videofile'] + ".stderr.log",
+    #         "data" : stderrdata }
+    #t_stderr = threading.Thread(target=container.create, kwargs=kwargs)
+    #t_stderr.start()
 
     # wait for the threads to finish uploading logs
-    t_stdout.join()
-    t_stderr.join()
+    #t_stdout.join()
+    #t_stderr.join()
+    #####################################################################
 
     if p.returncode < 0:
         return False
@@ -257,18 +290,17 @@ def init_worker_pool( rax_queue, rax_auth, container_logs ):
         worker_pool.append(t)
     return worker_pool
 
-def main(poll=3, time_to_wait=2):
-    poll = 3
+def main(poll=60, time_to_wait=2, jobs_container='video_jobs'):
     auth = RaxAuth()
     rax_queue = RaxQueue( rax_auth=auth, time_to_wait=time_to_wait)
-    worker_pool = init_worker_pool( rax_queue, auth, 'video_jobs') 
+    worker_pool = init_worker_pool( rax_queue, auth, jobs_container) 
     while True:
+        time.sleep(poll)
         for w in worker_pool:
             if w.is_alive() and w.daemon:
                 print "ALIVE + name: %s id: %s" % (w.name, w.ident) 
             elif w.daemon:
                 print "DEAD - name: %s id: %s" % (w.name, w.ident) 
-        time.sleep(poll)
 
 if __name__ == '__main__':
     main()
