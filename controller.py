@@ -166,7 +166,6 @@ def monitor_container( event, rax_queue, item, popen ):
             # If we make it here our docker container is probably hung
             # and we should give up our claim
             print "Message age exceeded ttl, giving up our claim: %s" % msg
-            rax_queue.release_task( item )
             print "Killing pid: %s" % popen.pid
             popen.kill()
             break
@@ -238,6 +237,10 @@ def worker( rax_queue, rax_auth, container_logs ):
             rax_queue.task_done(item)
             update_job_status(item)
         else:
+            item.reload()
+            for msg in messages:
+                msg.reload()
+            item.messages = messages
             print "Couldn't Process task:\n%sreleasing claim\n" % item
             rax_queue.release_task(item) 
 
