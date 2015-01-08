@@ -291,24 +291,31 @@ def process_video( item, rax_auth, rax_queue, logs_container ):
 
 def worker( rax_queue, rax_auth, container_logs ):
     while True:
-        # because reloading will cause the message list to disapper we
-        # need to save it in another variable.
-        item = rax_queue.get_task()
-        messages = item.messages
-        if process_video( item, rax_auth, rax_queue, container_logs):
-            item.reload()
-            for msg in messages:
-                msg.reload()
-            item.messages = messages
-            rax_queue.task_done(item)
-            update_job_status(item)
-        else:
-            item.reload()
-            for msg in messages:
-                msg.reload()
-            item.messages = messages
-            print "Couldn't Process task:\n%sreleasing claim\n" % item
-            rax_queue.release_task(item) 
+        try:
+            # because reloading will cause the message list to disapper we
+            # need to save it in another variable.
+            item = rax_queue.get_task()
+            messages = item.messages
+            if process_video( item, rax_auth, rax_queue, container_logs):
+                item.reload()
+                for msg in messages:
+                    msg.reload()
+                item.messages = messages
+                rax_queue.task_done(item)
+                update_job_status(item)
+            else:
+                item.reload()
+                for msg in messages:
+                    msg.reload()
+                item.messages = messages
+                print "Couldn't Process task:\n%sreleasing claim\n" % item
+                rax_queue.release_task(item) 
+        except:
+            e = sys.exec_info()[0]
+            print "WORKER encountered an error: ", e
+            print "Thread: ", threading.current_thread()
+            print "Trying again...."
+            continue
 
 def update_job_status( rax_queue_message):
     print "Job %s is Done!" % rax_queue_message
