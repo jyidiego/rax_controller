@@ -185,22 +185,29 @@ def monitor_container( event, rax_queue, item, container_id ):
     d = DockWorker()
     item, msg_list = message_refresh( item, item.messages )
     while not event.is_set():
-        if rax_queue.refresh_claim_ttl( item, rax_queue.rax_msg_ttl ):
-            item, msg_list = message_refresh( item, msg_list )
-            print "REFRESHING Claim: %s" % item 
-        else:
-            item, msg_list = message_refresh( item, msg_list )
-            print "NOOP Claim: %s" % item 
+        try:
+            if rax_queue.refresh_claim_ttl( item, rax_queue.rax_msg_ttl ):
+                item, msg_list = message_refresh( item, msg_list )
+                print "REFRESHING Claim: %s" % item 
+            else:
+                item, msg_list = message_refresh( item, msg_list )
+                print "NOOP Claim: %s" % item 
 
-        for msg in msg_list:
-            msg.reload()
-            if msg.age > msg.ttl:
-                # If we make it here our docker container is probably hung
-                # and we should give up our claim
-                print "Message age exceeded ttl, giving up our claim: %s" % msg
-                print "Killing container: %s" % d.inspect_container(container_id) 
-                d.dockerh.kill( container_id )
-                return 1
+            for msg in msg_list:
+                msg.reload()
+                if msg.age > msg.ttl:
+                    # If we make it here our docker container is probably hung
+                    # and we should give up our claim
+                    print "Message age exceeded ttl, giving up our claim: %s" % msg
+                    print "Killing container: %s" % d.inspect_container(container_id) 
+                    d.dockerh.kill( container_id )
+                    return 1
+        except:
+            e = sys.exec_info()[0]
+            print "MONITOR encountered an error: ", e
+            print "Thread: ", threading.current_thread()
+            print "Trying again...."
+            continue
         time.sleep( rax_queue.tt_wait )
     return 0
 
@@ -258,7 +265,7 @@ def process_video( item, rax_auth, rax_queue, logs_container ):
         #print "Stored stderr:", stderr_blob
     except:
         e = sys.exec_info()[0]
-        print "Upload of stdout/stderr from workder failed!"
+        print "Upload of stdout/stderr to cloud files failed!"
         print "Unknown Error: ", e
         print "Continuing on.."
 
@@ -282,7 +289,7 @@ def process_video( item, rax_auth, rax_queue, logs_container ):
 
     # if p.returncode < 0:
     if ret_code != 0:
-        print "Container had issues, leaving it along for inspection: ", container_dict['Id']
+        print "Container had issues, leaving it alone for inspection: ", container_dict['Id']
         return False
     else:
         # Cleanup Container
@@ -290,26 +297,52 @@ def process_video( item, rax_auth, rax_queue, logs_container ):
         return True
 
 def worker( rax_queue, rax_auth, container_logs ):
+    item = None
+    messages = None
     while True:
         try:
-            # because reloading will cause the message list to disapper we
-            # need to save it in another variable.
-            item = rax_queue.get_task()
-            messages = item.messages
-            if process_video( item, rax_auth, rax_queue, container_logs):
-                item.reload()
-                for msg in messages:
-                    msg.reload()
-                item.messages = messages
-                rax_queue.task_done(item)
-                update_job_status(item)
+            if not item: 
+                item = rax_queue.get_task()
+            # because reloading will cause the message attribute
+            # list on item to disapper we need to save it
+            # in another variable.
+            # This first if is for the first time we enter the loop or
+            # if an exception occured trying to get an item
+            if item.messages:
+                item, messages = message_refresh( item, item.messages )
             else:
-                item.reload()
-                for msg in messages:
-                    msg.reload()
-                item.messages = messages
-                print "Couldn't Process task:\n%sreleasing claim\n" % item
-                rax_queue.release_task(item) 
+                item, messages = message_refresh( item, messages )
+
+            if process_video( item, rax_auth, rax_queue, container_logs):
+                retry = True
+                while retry:
+                    try:
+                        item, messages = message_refresh( item, messages )
+                        rax_queue.task_done(item)
+                        print "Job %s is Done!" % item
+                        retry = False
+                    except:
+                        e = sys.exec_info()[0]
+                        print "WORKER encountered an error marking task done: ", e
+                        print "Thread: ", threading.current_thread()
+                        print "Trying again...."
+                        continue
+            else:
+                retry = True
+                while retry:
+                    try:
+                        item, messages = message_refresh( item, messages )
+                        rax_queue.release_task(item) 
+                        retry = False
+                        print "Couldn't Process task:\n%sreleasing claim\n" % item
+                    except:
+                        e = sys.exec_info()[0]
+                        print "WORKER encountered an error releasing task: ", e
+                        print "Thread: ", threading.current_thread()
+                        print "Trying again...."
+                        continue
+            item = None
+            messages = None
         except:
             e = sys.exec_info()[0]
             print "WORKER encountered an error: ", e
@@ -320,10 +353,10 @@ def worker( rax_queue, rax_auth, container_logs ):
 def update_job_status( rax_queue_message):
     print "Job %s is Done!" % rax_queue_message
 
-def init_worker_pool( rax_queue, rax_auth, container_logs ): 
+def init_worker_pool( rax_queue, rax_auth, container_logs, num_workers=get_worker_count() ): 
     worker_pool = [ ]
     args=( rax_queue, rax_auth, container_logs )
-    for i in range( get_worker_count() ):
+    for i in range( num_workers ):
         t = threading.Thread(target=worker, args=args)
         t.daemon = True
         t.start()
