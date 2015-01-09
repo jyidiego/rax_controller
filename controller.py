@@ -227,28 +227,25 @@ def process_video( item, rax_auth, rax_queue, logs_container ):
                         item_dict['output-container'],
                         item_dict['input-container'] )
 
-    container_dict = dock_worker.run_container_from_image( docker_image,
-                                                           video_cmd,
-                                                           rax_auth.gorax_env_dict() )
+    try:
+        container_dict = dock_worker.run_container_from_image( docker_image,
+                                                               video_cmd,
+                                                               rax_auth.gorax_env_dict() )
 
-    # Not going to use subprocess.Popen
-    # pargs = shlex.split( video_cmd )
-    # p = Popen( pargs, stdout=PIPE, stderr=PIPE )
+        e = threading.Event()
+        m_thread = threading.Thread(target=monitor_container, args=(e, rax_queue, item, container_dict['Id'],))
+        m_thread.start()
 
-    # Though i needed this but maybe not
-    # c_id = p.stdout.readline().strip()
-    e = threading.Event()
-    m_thread = threading.Thread(target=monitor_container, args=(e, rax_queue, item, container_dict['Id'],))
-    m_thread.start()
+        ret_code = dock_worker.wait( container_dict['Id'] )
 
-    # Not using subprocess.Popen
-    # p.wait()
-    ret_code = dock_worker.wait( container_dict['Id'] )
+        # time for the monitoring thread to be terminated
+        e.set()
 
-
-    # time for the monitoring thread to be terminated
-    e.set()
-
+    except:
+        e = sys.exc_info()[0]
+        print "ERROR: Issue with docker API calls"
+        print "ERROR: Unknown Error, returning False: ", e
+        return False
     # brief wait while the worker thread catches up.
     # m_thread.join() probably not necessary
     # stdoutdata, stderrdata = p.communicate()
@@ -342,6 +339,7 @@ def worker( rax_queue, rax_auth, container_logs ):
                         print "WORKER encountered an error releasing task: ", e
                         print "Thread: ", threading.current_thread()
                         print "Trying again...."
+                        time.sleep(rax_queue.tt_wait)
                         continue
             item = None
             messages = None
@@ -350,6 +348,7 @@ def worker( rax_queue, rax_auth, container_logs ):
             print "WORKER encountered an error: ", e
             print "Thread: ", threading.current_thread()
             print "Trying again...."
+            time.sleep(rax_queue.tt_wait)
             continue
 
 def update_job_status( rax_queue_message):
