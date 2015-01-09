@@ -5,6 +5,7 @@ import multiprocessing
 import Queue
 import pyrax
 import shlex
+import sys
 import threading
 import time
 import uuid
@@ -156,7 +157,7 @@ class RaxQueue(threading.Thread):
                 print "ConnectionError: %s" % e
                 continue
             except:
-                e = sys.exec_info()[0]
+                e = sys.exc_info()[0]
                 print "Unknown Error: %s" % e
                 continue
             if m:
@@ -203,7 +204,7 @@ def monitor_container( event, rax_queue, item, container_id ):
                     d.dockerh.kill( container_id )
                     return 1
         except:
-            e = sys.exec_info()[0]
+            e = sys.exc_info()[0]
             print "MONITOR encountered an error: ", e
             print "Thread: ", threading.current_thread()
             print "Trying again...."
@@ -264,7 +265,7 @@ def process_video( item, rax_auth, rax_queue, logs_container ):
         #                                      data=stderrdata )
         #print "Stored stderr:", stderr_blob
     except:
-        e = sys.exec_info()[0]
+        e = sys.exc_info()[0]
         print "Upload of stdout/stderr to cloud files failed!"
         print "Unknown Error: ", e
         print "Continuing on.."
@@ -322,10 +323,11 @@ def worker( rax_queue, rax_auth, container_logs ):
                         print "Job %s is Done!" % item
                         retry = False
                     except:
-                        e = sys.exec_info()[0]
+                        e = sys.exc_info()[0]
                         print "WORKER encountered an error marking task done: ", e
                         print "Thread: ", threading.current_thread()
                         print "Trying again...."
+                        time.sleep(rax_queue.tt_wait)
                         continue
             else:
                 retry = True
@@ -336,7 +338,7 @@ def worker( rax_queue, rax_auth, container_logs ):
                         retry = False
                         print "Couldn't Process task:\n%sreleasing claim\n" % item
                     except:
-                        e = sys.exec_info()[0]
+                        e = sys.exc_info()[0]
                         print "WORKER encountered an error releasing task: ", e
                         print "Thread: ", threading.current_thread()
                         print "Trying again...."
@@ -344,7 +346,7 @@ def worker( rax_queue, rax_auth, container_logs ):
             item = None
             messages = None
         except:
-            e = sys.exec_info()[0]
+            e = sys.exc_info()[0]
             print "WORKER encountered an error: ", e
             print "Thread: ", threading.current_thread()
             print "Trying again...."
