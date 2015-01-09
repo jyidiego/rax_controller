@@ -5,6 +5,7 @@ import multiprocessing
 import Queue
 import pyrax
 import shlex
+import sys
 import threading
 import time
 import uuid
