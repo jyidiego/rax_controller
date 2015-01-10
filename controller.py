@@ -57,6 +57,13 @@ class DockWorker(object):
     def remove_container(self, container_id):
         return self.dockerh.remove_container( container_id )
 
+    def pull_image(self, repository, tag=None, stream=False, insecure_registry=False):
+        for line in self.dockerh.pull( repository=repository,
+                                       tag=tag,
+                                       stream=stream,
+                                       insecure_registry=insecure_registry):
+            print(json.dumps(json.loads(line), indent=4))
+
 
 class RaxAuth(object):
     def __init__(   self,
@@ -357,6 +364,11 @@ def update_job_status( rax_queue_message):
 
 def init_worker_pool( rax_queue, rax_auth, container_logs, num_workers=get_worker_count() ): 
     worker_pool = [ ]
+    dock_worker = DockWorker()
+    # pull our worker image from registry
+    # print output in JSON
+    print "Pulling image: ", docker_image
+    dock_worker.pull_image( docker_image, stream=True )
     args=( rax_queue, rax_auth, container_logs )
     for i in range( num_workers ):
         t = threading.Thread(target=worker, args=args)
